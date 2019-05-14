@@ -95,7 +95,7 @@ __global__ void kernel_conv2d(
 
     //load bias to shared memory
     int lid = l_y * BS + l_x;
-    for(int i = lid; i < FS; i+=BS*BS){
+    for(int i = lid; bias != NULL && i < FS; i+=BS*BS){
         if(l_f_n*FS + i < o_c)
             shared_b[i] = bias[l_f_n*FS + i];
         else shared_b[i] = 0;
@@ -169,7 +169,7 @@ __global__ void kernel_conv2d(
         for(int fc = 0; fc < FS; fc++){
             if(l_f_n*FS + fc < o_c){
                 int oi = n*o_c*o_h*o_w + (l_f_n*FS+fc) * o_h * o_w + l_o_h/stride_h * o_w + g_x/stride_w;
-                output[oi] = sum[fc] + shared_b[fc];
+                output[oi] = sum[fc] + (bias != NULL ? shared_b[fc] : 0);
             }
         }
     }
@@ -204,7 +204,7 @@ __global__ void kernel_conv2d_no_shared(
                 }
              }
         }
-        output[gy * o_w + gx] = sum + bias[l_o_c];
+        output[gy * o_w + gx] = sum + (bias != NULL ? bias[l_o_c] : 0);
     }
 }
 const char* cuda_conv2d(
@@ -218,21 +218,32 @@ const char* cuda_conv2d(
         int32_t *output, int32_t o_n, int32_t o_c, int32_t o_h, int32_t o_w, 
         int32_t device_id,
         bool debug){
+    if(i_n < 1 || i_c < 1 || i_h < 1 || i_w < 1 || f_n < 1 || f_c < 1 || f_h < 1 || f_w < 1 || 
+            padding_h < 0 || padding_w < 0 || stride_h < 1 || stride_w < 1 || dilation_h < 1 || dilation_w < 1 ||
+            o_n < 1 || o_c < 1 || o_h < 1 || o_w < 1){
+        return "error args";
+    }
     int32_t *dev_i = input, *dev_f = filter, *dev_o = output, *dev_b = bias;
     size_t s_i = i_n * i_c * i_h * i_w * sizeof(int32_t);
     size_t s_f = f_n * f_c * f_h * f_w * sizeof(int32_t);
     size_t s_b = o_c * sizeof(int32_t); 
     size_t s_o = o_n * o_c * o_h * o_w * sizeof(int32_t);
+    cudaEvent_t start, stop;
     if(debug){
         cudaMalloc((void**)&dev_i, s_i);
         cudaMalloc((void**)&dev_f, s_f);
-        cudaMalloc((void**)&dev_b, s_b);
         cudaMalloc((void**)&dev_o, s_o);
         cudaMemcpy(dev_i, input, s_i, cudaMemcpyHostToDevice);
         cudaMemcpy(dev_f, filter, s_f, cudaMemcpyHostToDevice);
-        cudaMemcpy(dev_b, bias, s_b, cudaMemcpyHostToDevice);
+        if(bias != NULL){
+            cudaMalloc((void**)&dev_b, s_b);
+            cudaMemcpy(dev_b, bias, s_b, cudaMemcpyHostToDevice);
+        }
+        cudaEventCreate(&start);
+        cudaEventCreate(&stop);
+        cudaEventRecord(start);
     }
-//    clock_t start = clock();
+
     int tmp_f_h = (f_h - 1) * dilation_h + 1; // for dilation, to be optimized
     int tmp_f_w = (f_w - 1) * dilation_w + 1;
     int tmp_o_h = i_h + 2 * padding_h - tmp_f_h + 1; //for stride > 1 , TODO to be optimized
@@ -274,14 +285,19 @@ const char* cuda_conv2d(
                 dev_o, o_n, o_c, o_h, o_w);
     }
 //    cudaDeviceSynchronize();
-//    clock_t end = clock();
-//    printf("gpu cal time: %d\n", end-start);
     if(debug){
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
+        float milliseconds = 0;
+        cudaEventElapsedTime(&milliseconds, start, stop);
+        double ops = (double)((double)1.0*i_n * o_c * o_h * o_w * f_h * f_w * f_c * 3.0);
+        printf("gpu cal time:%.4f, %f, %.4f\n", milliseconds, ops, ops / (milliseconds / 1000.0) / 1024.0/1024.0/1024.0);
         cudaMemcpy(output, dev_o, s_o, cudaMemcpyDeviceToHost);
         cudaFree(dev_i);
         cudaFree(dev_f);
         cudaFree(dev_o);
-        cudaFree(dev_b);
+        if(bias != NULL)
+            cudaFree(dev_b);
     }
     return check_cuda_error(cudaGetLastError());
 }
@@ -379,7 +395,7 @@ __global__ void kernel_depthwise_conv2d(
     if(l_o_h % stride_h == 0 && g_x % stride_w == 0){
         //int oi = l_o_c * o_h * o_w + l_o_h * o_w + g_x;
         int oi = l_o_c * o_h * o_w + l_o_h/stride_h * o_w + g_x/stride_w;
-        output[oi] = sum + bias[l_o_c%o_c];
+        output[oi] = sum + (bias != NULL ? bias[l_o_c%o_c] : 0);
     }
 }
 __global__ void kernel_depthwise_conv2d_no_shared(
@@ -409,7 +425,7 @@ __global__ void kernel_depthwise_conv2d_no_shared(
                 sum += x * filter[l_o_n * i_c * f_h * f_w + l_o_c * f_h * f_w + fy * f_w + fx];
             }
         }
-        output[gy * o_w + gx] = sum + bias[l_o_c];
+        output[gy * o_w + gx] = sum + (bias != NULL ? bias[l_o_c] : 0);
     }
 }
 const char* cuda_depthwise_conv2d(
@@ -429,11 +445,13 @@ const char* cuda_depthwise_conv2d(
     if(debug){
         cudaMalloc((void**)&dev_i, s_i);
         cudaMalloc((void**)&dev_f, s_f);
-        cudaMalloc((void**)&dev_b, s_b);
         cudaMalloc((void**)&dev_o, s_o);
         cudaMemcpy(dev_i, input, s_i, cudaMemcpyHostToDevice);
         cudaMemcpy(dev_f, filter, s_f, cudaMemcpyHostToDevice);
-        cudaMemcpy(dev_b, bias, s_b, cudaMemcpyHostToDevice);
+        if(bias != NULL){
+            cudaMalloc((void**)&dev_b, s_b);
+            cudaMemcpy(dev_b, bias, s_b, cudaMemcpyHostToDevice);
+        }
     }
 //    clock_t start = clock();
     int b_h = BS;
@@ -481,7 +499,8 @@ const char* cuda_depthwise_conv2d(
         cudaFree(dev_i);
         cudaFree(dev_f);
         cudaFree(dev_o);
-        cudaFree(dev_b);
+        if(bias != NULL)
+            cudaFree(dev_b);
     }
     return check_cuda_error(cudaGetLastError());
 }
@@ -825,13 +844,41 @@ const char* cuda_flatten(const int32_t *x, int32_t *y, const int32_t n, bool deb
     return check_cuda_error(cudaGetLastError());
 }
 
-__global__ void kernel_broadcast_add(const int32_t *a, const int32_t *b, int32_t*c, const int32_t n){
+inline __device__ int32_t broadcast_i_index(int64_t* oshape, int o_index, int64_t* ishape, int idim){
+    int index = 0;
+    int allIndex = 0;
+    for(int i = 0; i < idim; i++){
+        int idx = idim - 1 - i;
+        int ovar = o_index % oshape[idx];
+        if(ovar < ishape[idx]){
+            index += i == 0 ? ovar : allIndex * ovar;
+        }else if(ishape[idx] == 1){
+        }else{
+        }
+        allIndex = (i == 0 ? ishape[idim-1] : allIndex * ishape[idx]);
+        o_index /= oshape[idx];
+    }
+    return index;
+}
+
+__global__ void kernel_broadcast_add(const int32_t *a, const int32_t *b, int32_t*c, 
+        const int32_t n,
+        int64_t *ashape, int32_t adim,
+        int64_t *bshape, int32_t bdim,
+        int64_t *cshape, int32_t cdim){
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if(i < n){
-        c[i] = a[i] + b[0];
+        int ai = broadcast_i_index(cshape, i, ashape, adim);
+        int bi = broadcast_i_index(cshape, i, bshape, bdim);
+        c[i] = a[ai] + b[bi];
     }
 }
-const char* cuda_broadcast_add(const int32_t *a, const int32_t *b, int32_t* c, const int32_t n, bool debug){
+const char* cuda_broadcast_add(const int32_t *a, const int32_t *b, int32_t* c, 
+        const int32_t n, 
+        int64_t *ashape, int32_t adim,
+        int64_t *bshape, int32_t bdim,
+        int64_t *cshape, int32_t cdim,
+        bool debug){
     const int32_t *dev_a = a, *dev_b = b;
     int32_t *tmp_a, *tmp_b;
     int32_t *dev_c = c;
@@ -845,9 +892,16 @@ const char* cuda_broadcast_add(const int32_t *a, const int32_t *b, int32_t* c, c
         cudaMemcpy(tmp_b, b, sizeof(int32_t), cudaMemcpyHostToDevice);
     }
 
+    int64_t *dev_ashape, *dev_bshape, *dev_cshape;
+    cudaMalloc((void**)&dev_ashape, sizeof(int64_t) * adim);
+    cudaMalloc((void**)&dev_bshape, sizeof(int64_t) * bdim);
+    cudaMalloc((void**)&dev_cshape, sizeof(int64_t) * cdim);
+    cudaMemcpy(dev_ashape, ashape, sizeof(int64_t) * adim, cudaMemcpyHostToDevice);
+    cudaMemcpy(dev_bshape, bshape, sizeof(int64_t) * bdim, cudaMemcpyHostToDevice);
+    cudaMemcpy(dev_cshape, cshape, sizeof(int64_t) * cdim, cudaMemcpyHostToDevice);
     int threadSize = 256;
     int blockSize = (n + threadSize - 1) / threadSize;
-    kernel_broadcast_add<<<blockSize, threadSize>>>(dev_a, dev_b, dev_c, n);
+    kernel_broadcast_add<<<blockSize, threadSize>>>(dev_a, dev_b, dev_c, n, dev_ashape, adim, dev_bshape, bdim, dev_cshape, cdim);
     //cudaDeviceSynchronize();
 
     if(debug){
@@ -856,15 +910,28 @@ const char* cuda_broadcast_add(const int32_t *a, const int32_t *b, int32_t* c, c
         cudaFree(dev_c);
         cudaFree(tmp_b);
     }
+    cudaFree(dev_ashape);
+    cudaFree(dev_bshape);
+    cudaFree(dev_cshape);
     return check_cuda_error(cudaGetLastError());
 }
-__global__ void kernel_broadcast_sub(const int32_t *a, const int32_t *b, int32_t*c, const int32_t n){
+__global__ void kernel_broadcast_sub(const int32_t *a, const int32_t *b, int32_t*c, const int32_t n,
+        int64_t *ashape, int32_t adim,
+        int64_t *bshape, int32_t bdim,
+        int64_t *cshape, int32_t cdim
+	){
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if(i < n){
-        c[i] = a[i] - b[0];
+	int32_t ai = broadcast_i_index(cshape, i, ashape, adim);
+	int32_t bi = broadcast_i_index(cshape, i, bshape, bdim);
+        c[i] = a[ai] - b[bi];
     }
 }
-const char* cuda_broadcast_sub(const int32_t *a, const int32_t *b, int32_t* c, const int32_t n, bool debug){
+const char* cuda_broadcast_sub(const int32_t *a, const int32_t *b, int32_t* c, const int32_t n, 
+        int64_t *ashape, int32_t adim,
+        int64_t *bshape, int32_t bdim,
+        int64_t *cshape, int32_t cdim,
+	bool debug){
     const int32_t *dev_a = a, *dev_b = b;
     int32_t *tmp_a, *tmp_b;
     int32_t *dev_c = c;
@@ -878,10 +945,21 @@ const char* cuda_broadcast_sub(const int32_t *a, const int32_t *b, int32_t* c, c
         cudaMemcpy(tmp_b, b, sizeof(int32_t), cudaMemcpyHostToDevice);
     }
 
+    int64_t *dev_ashape, *dev_bshape, *dev_cshape;
+    cudaMalloc((void**)&dev_ashape, sizeof(int64_t) * adim);
+    cudaMalloc((void**)&dev_bshape, sizeof(int64_t) * bdim);
+    cudaMalloc((void**)&dev_cshape, sizeof(int64_t) * cdim);
+    cudaMemcpy(dev_ashape, ashape, sizeof(int64_t) * adim, cudaMemcpyHostToDevice);
+    cudaMemcpy(dev_bshape, bshape, sizeof(int64_t) * bdim, cudaMemcpyHostToDevice);
+    cudaMemcpy(dev_cshape, cshape, sizeof(int64_t) * cdim, cudaMemcpyHostToDevice);
     int threadSize = 256;
     int blockSize = (n + threadSize - 1) / threadSize;
-    kernel_broadcast_sub<<<blockSize, threadSize>>>(dev_a, dev_b, dev_c, n);
+    kernel_broadcast_sub<<<blockSize, threadSize>>>(dev_a, dev_b, dev_c, n, dev_ashape, adim, dev_bshape, bdim, dev_cshape, cdim);
     //cudaDeviceSynchronize();
+
+    cudaFree(dev_ashape);
+    cudaFree(dev_bshape);
+    cudaFree(dev_cshape);
 
     if(debug){
         cudaMemcpy(c, dev_c, sizeof(int32_t)*n, cudaMemcpyDeviceToHost);
@@ -891,13 +969,23 @@ const char* cuda_broadcast_sub(const int32_t *a, const int32_t *b, int32_t* c, c
     }
     return check_cuda_error(cudaGetLastError());
 }
-__global__ void kernel_broadcast_mul(const int32_t *a, const int32_t *b, int32_t*c, const int32_t n){
+__global__ void kernel_broadcast_mul(const int32_t *a, const int32_t *b, int32_t*c, const int32_t n,
+        int64_t *ashape, int32_t adim,
+        int64_t *bshape, int32_t bdim,
+        int64_t *cshape, int32_t cdim
+	){
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if(i < n){
-        c[i] = a[i] * b[0];
+	int32_t ai = broadcast_i_index(cshape, i, ashape, adim);
+	int32_t bi = broadcast_i_index(cshape, i, bshape, bdim);
+        c[i] = a[ai] * b[bi];
     }
 }
-const char* cuda_broadcast_mul(const int32_t *a, const int32_t *b, int32_t* c, const int32_t n, bool debug){
+const char* cuda_broadcast_mul(const int32_t *a, const int32_t *b, int32_t* c, const int32_t n, 
+        int64_t *ashape, int32_t adim,
+        int64_t *bshape, int32_t bdim,
+        int64_t *cshape, int32_t cdim,
+	bool debug){
     const int32_t *dev_a = a, *dev_b = b;
     int32_t *tmp_a, *tmp_b;
     int32_t *dev_c = c;
@@ -911,11 +999,21 @@ const char* cuda_broadcast_mul(const int32_t *a, const int32_t *b, int32_t* c, c
         cudaMemcpy(tmp_b, b, sizeof(int32_t), cudaMemcpyHostToDevice);
     }
 
+    int64_t *dev_ashape, *dev_bshape, *dev_cshape;
+    cudaMalloc((void**)&dev_ashape, sizeof(int64_t) * adim);
+    cudaMalloc((void**)&dev_bshape, sizeof(int64_t) * bdim);
+    cudaMalloc((void**)&dev_cshape, sizeof(int64_t) * cdim);
+    cudaMemcpy(dev_ashape, ashape, sizeof(int64_t) * adim, cudaMemcpyHostToDevice);
+    cudaMemcpy(dev_bshape, bshape, sizeof(int64_t) * bdim, cudaMemcpyHostToDevice);
+    cudaMemcpy(dev_cshape, cshape, sizeof(int64_t) * cdim, cudaMemcpyHostToDevice);
     int threadSize = 256;
     int blockSize = (n + threadSize - 1) / threadSize;
-    kernel_broadcast_mul<<<blockSize, threadSize>>>(dev_a, dev_b, dev_c, n);
+    kernel_broadcast_mul<<<blockSize, threadSize>>>(dev_a, dev_b, dev_c, n, dev_ashape, adim, dev_bshape, bdim, dev_cshape, cdim);
     //cudaDeviceSynchronize();
 
+    cudaFree(dev_ashape);
+    cudaFree(dev_bshape);
+    cudaFree(dev_cshape);
     if(debug){
         cudaMemcpy(c, dev_c, sizeof(int32_t)*n, cudaMemcpyDeviceToHost);
         cudaFree(tmp_a);
@@ -924,13 +1022,23 @@ const char* cuda_broadcast_mul(const int32_t *a, const int32_t *b, int32_t* c, c
     }
     return check_cuda_error(cudaGetLastError());
 }
-__global__ void kernel_broadcast_div(const int32_t *a, const int32_t *b, int32_t*c, const int32_t n){
+__global__ void kernel_broadcast_div(const int32_t *a, const int32_t *b, int32_t*c, const int32_t n,
+        int64_t *ashape, int32_t adim,
+        int64_t *bshape, int32_t bdim,
+        int64_t *cshape, int32_t cdim
+	){
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if(i < n){
-        c[i] = a[i] / b[0];
+	int32_t ai = broadcast_i_index(cshape, i, ashape, adim);
+	int32_t bi = broadcast_i_index(cshape, i, bshape, bdim);
+        c[i] = a[ai] / b[bi];
     }
 }
-const char* cuda_broadcast_div(const int32_t *a, const int32_t *b, int32_t* c, const int32_t n, bool debug){
+const char* cuda_broadcast_div(const int32_t *a, const int32_t *b, int32_t* c, const int32_t n,
+        int64_t *ashape, int32_t adim,
+        int64_t *bshape, int32_t bdim,
+        int64_t *cshape, int32_t cdim,
+	bool debug){
     const int32_t *dev_a = a, *dev_b = b;
     int32_t *tmp_a, *tmp_b;
     int32_t *dev_c = c;
@@ -944,10 +1052,25 @@ const char* cuda_broadcast_div(const int32_t *a, const int32_t *b, int32_t* c, c
         cudaMemcpy(tmp_b, b, sizeof(int32_t), cudaMemcpyHostToDevice);
     }
 
+    int h_b;
+    cudaMemcpy(&h_b, dev_b, sizeof(int32_t), cudaMemcpyDeviceToHost);
+    if(h_b == 0)
+        return "error: divide by zero";
+
+    int64_t *dev_ashape, *dev_bshape, *dev_cshape;
+    cudaMalloc((void**)&dev_ashape, sizeof(int64_t) * adim);
+    cudaMalloc((void**)&dev_bshape, sizeof(int64_t) * bdim);
+    cudaMalloc((void**)&dev_cshape, sizeof(int64_t) * cdim);
+    cudaMemcpy(dev_ashape, ashape, sizeof(int64_t) * adim, cudaMemcpyHostToDevice);
+    cudaMemcpy(dev_bshape, bshape, sizeof(int64_t) * bdim, cudaMemcpyHostToDevice);
+    cudaMemcpy(dev_cshape, cshape, sizeof(int64_t) * cdim, cudaMemcpyHostToDevice);
     int threadSize = 256;
     int blockSize = (n + threadSize - 1) / threadSize;
-    kernel_broadcast_div<<<blockSize, threadSize>>>(dev_a, dev_b, dev_c, n);
+    kernel_broadcast_div<<<blockSize, threadSize>>>(dev_a, dev_b, dev_c, n, dev_ashape, adim, dev_bshape, bdim, dev_cshape, cdim);
     //cudaDeviceSynchronize();
+    cudaFree(dev_ashape);
+    cudaFree(dev_bshape);
+    cudaFree(dev_cshape);
 
     if(debug){
         cudaMemcpy(c, dev_c, sizeof(int32_t)*n, cudaMemcpyDeviceToHost);
@@ -957,13 +1080,23 @@ const char* cuda_broadcast_div(const int32_t *a, const int32_t *b, int32_t* c, c
     }
     return check_cuda_error(cudaGetLastError());
 }
-__global__ void kernel_broadcast_right_shift(const int32_t *a, const int32_t *b, int32_t*c, const int32_t n){
+__global__ void kernel_broadcast_right_shift(const int32_t *a, const int32_t *b, int32_t*c, const int32_t n,
+        int64_t *ashape, int32_t adim,
+        int64_t *bshape, int32_t bdim,
+        int64_t *cshape, int32_t cdim
+){
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if(i < n){
-        c[i] = a[i] >> b[0];
+	int32_t ai = broadcast_i_index(cshape, i, ashape, adim);
+	int32_t bi = broadcast_i_index(cshape, i, bshape, bdim);
+        c[i] = a[ai] >> b[bi];
     }
 }
-const char* cuda_broadcast_right_shift(const int32_t *a, const int32_t* b, int32_t* c, const int32_t n, bool debug){
+const char* cuda_broadcast_right_shift(const int32_t *a, const int32_t* b, int32_t* c, const int32_t n,
+        int64_t *ashape, int32_t adim,
+        int64_t *bshape, int32_t bdim,
+        int64_t *cshape, int32_t cdim,
+	bool debug){
     const int32_t *dev_a = a;
     const int32_t *dev_b = b;
     int32_t *tmp_a, *tmp_b;
@@ -978,10 +1111,20 @@ const char* cuda_broadcast_right_shift(const int32_t *a, const int32_t* b, int32
         cudaMemcpy(tmp_b, b, sizeof(int32_t), cudaMemcpyHostToDevice);
     }
 
+    int64_t *dev_ashape, *dev_bshape, *dev_cshape;
+    cudaMalloc((void**)&dev_ashape, sizeof(int64_t) * adim);
+    cudaMalloc((void**)&dev_bshape, sizeof(int64_t) * bdim);
+    cudaMalloc((void**)&dev_cshape, sizeof(int64_t) * cdim);
+    cudaMemcpy(dev_ashape, ashape, sizeof(int64_t) * adim, cudaMemcpyHostToDevice);
+    cudaMemcpy(dev_bshape, bshape, sizeof(int64_t) * bdim, cudaMemcpyHostToDevice);
+    cudaMemcpy(dev_cshape, cshape, sizeof(int64_t) * cdim, cudaMemcpyHostToDevice);
     int threadSize = 256;
     int blockSize = (n + threadSize - 1) / threadSize;
-    kernel_broadcast_right_shift<<<blockSize, threadSize>>>(dev_a, dev_b, dev_c, n);
+    kernel_broadcast_right_shift<<<blockSize, threadSize>>>(dev_a, dev_b, dev_c, n, dev_ashape, adim, dev_bshape, bdim, dev_cshape, cdim);
     //cudaDeviceSynchronize();
+    cudaFree(dev_ashape);
+    cudaFree(dev_bshape);
+    cudaFree(dev_cshape);
 
     if(debug){
         cudaMemcpy(c, dev_c, sizeof(int32_t)*n, cudaMemcpyDeviceToHost);
@@ -991,13 +1134,23 @@ const char* cuda_broadcast_right_shift(const int32_t *a, const int32_t* b, int32
     }
     return check_cuda_error(cudaGetLastError());
 }
-__global__ void kernel_broadcast_left_shift(const int32_t *a, const int32_t *b, int32_t*c, const int32_t n){
+__global__ void kernel_broadcast_left_shift(const int32_t *a, const int32_t *b, int32_t*c, const int32_t n,
+        int64_t *ashape, int32_t adim,
+        int64_t *bshape, int32_t bdim,
+        int64_t *cshape, int32_t cdim
+	){
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if(i < n){
-        c[i] = a[i] << b[0];
+	int32_t ai = broadcast_i_index(cshape, i, ashape, adim);
+	int32_t bi = broadcast_i_index(cshape, i, bshape, bdim);
+        c[i] = a[ai] << b[bi];
     }
 }
-const char* cuda_broadcast_left_shift(const int32_t *a, const int32_t *b, int32_t* c, const int32_t n, bool debug){
+const char* cuda_broadcast_left_shift(const int32_t *a, const int32_t *b, int32_t* c, const int32_t n, 
+        int64_t *ashape, int32_t adim,
+        int64_t *bshape, int32_t bdim,
+        int64_t *cshape, int32_t cdim,
+	bool debug){
     const int32_t *dev_a = a, *dev_b = b;
     int32_t *tmp_a, *tmp_b;
     int32_t *dev_c = c;
@@ -1011,10 +1164,20 @@ const char* cuda_broadcast_left_shift(const int32_t *a, const int32_t *b, int32_
         cudaMemcpy(tmp_b, b, sizeof(int32_t), cudaMemcpyHostToDevice);
     }
 
+    int64_t *dev_ashape, *dev_bshape, *dev_cshape;
+    cudaMalloc((void**)&dev_ashape, sizeof(int64_t) * adim);
+    cudaMalloc((void**)&dev_bshape, sizeof(int64_t) * bdim);
+    cudaMalloc((void**)&dev_cshape, sizeof(int64_t) * cdim);
+    cudaMemcpy(dev_ashape, ashape, sizeof(int64_t) * adim, cudaMemcpyHostToDevice);
+    cudaMemcpy(dev_bshape, bshape, sizeof(int64_t) * bdim, cudaMemcpyHostToDevice);
+    cudaMemcpy(dev_cshape, cshape, sizeof(int64_t) * cdim, cudaMemcpyHostToDevice);
     int threadSize = 256;
     int blockSize = (n + threadSize - 1) / threadSize;
-    kernel_broadcast_left_shift<<<blockSize, threadSize>>>(dev_a, dev_b, dev_c, n);
+    kernel_broadcast_left_shift<<<blockSize, threadSize>>>(dev_a, dev_b, dev_c, n, dev_ashape, adim, dev_bshape, bdim, dev_cshape, cdim);
     //cudaDeviceSynchronize();
+    cudaFree(dev_ashape);
+    cudaFree(dev_bshape);
+    cudaFree(dev_cshape);
 
     if(debug){
         cudaMemcpy(c, dev_c, sizeof(int32_t)*n, cudaMemcpyDeviceToHost);
@@ -1024,13 +1187,23 @@ const char* cuda_broadcast_left_shift(const int32_t *a, const int32_t *b, int32_
     }
     return check_cuda_error(cudaGetLastError());
 }
-__global__ void kernel_broadcast_max(const int32_t *a, const int32_t *b, int32_t *c, const int32_t n){
+__global__ void kernel_broadcast_max(const int32_t *a, const int32_t *b, int32_t *c, const int32_t n,
+        int64_t *ashape, int32_t adim,
+        int64_t *bshape, int32_t bdim,
+        int64_t *cshape, int32_t cdim
+	){
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     if(i < n){
-        c[i] = a[i] > b[0] ? a[i] : b[0];
+	int32_t ai = broadcast_i_index(cshape, i, ashape, adim);
+	int32_t bi = broadcast_i_index(cshape, i, bshape, bdim);
+        c[i] = a[ai] > b[bi] ? a[ai] : b[bi];
     }
 }
-const char* cuda_broadcast_max(const int32_t *a, const int32_t *b, int32_t* c, const int32_t n, bool debug){
+const char* cuda_broadcast_max(const int32_t *a, const int32_t *b, int32_t* c, const int32_t n, 
+        int64_t *ashape, int32_t adim,
+        int64_t *bshape, int32_t bdim,
+        int64_t *cshape, int32_t cdim,
+	bool debug){
     const int32_t *dev_a = a, *dev_b = b;
     int32_t *tmp_a, *tmp_b;
     int32_t *dev_c = c;
@@ -1044,10 +1217,20 @@ const char* cuda_broadcast_max(const int32_t *a, const int32_t *b, int32_t* c, c
         cudaMemcpy(tmp_b, b, sizeof(int32_t), cudaMemcpyHostToDevice);
     }
 
+    int64_t *dev_ashape, *dev_bshape, *dev_cshape;
+    cudaMalloc((void**)&dev_ashape, sizeof(int64_t) * adim);
+    cudaMalloc((void**)&dev_bshape, sizeof(int64_t) * bdim);
+    cudaMalloc((void**)&dev_cshape, sizeof(int64_t) * cdim);
+    cudaMemcpy(dev_ashape, ashape, sizeof(int64_t) * adim, cudaMemcpyHostToDevice);
+    cudaMemcpy(dev_bshape, bshape, sizeof(int64_t) * bdim, cudaMemcpyHostToDevice);
+    cudaMemcpy(dev_cshape, cshape, sizeof(int64_t) * cdim, cudaMemcpyHostToDevice);
     int threadSize = 256;
     int blockSize = (n + threadSize - 1) / threadSize;
-    kernel_broadcast_max<<<blockSize, threadSize>>>(dev_a, dev_b, dev_c, n);
+    kernel_broadcast_max<<<blockSize, threadSize>>>(dev_a, dev_b, dev_c, n, dev_ashape, adim, dev_bshape, bdim, dev_cshape, cdim);
     //cudaDeviceSynchronize();
+    cudaFree(dev_ashape);
+    cudaFree(dev_bshape);
+    cudaFree(dev_cshape);
 
     if(debug){
         cudaMemcpy(c, dev_c, sizeof(int32_t)*n, cudaMemcpyDeviceToHost);
@@ -1135,6 +1318,10 @@ const char* cuda_log(const int32_t *x, int32_t *y, const bool debug){
         cudaMemcpy(tmp_x, x, sizeof(int32_t), cudaMemcpyHostToDevice);
     }
 
+    int h_x;
+    cudaMemcpy(&h_x, dev_x, sizeof(int32_t), cudaMemcpyDeviceToHost);
+    if(h_x == 0) return "error: log2(0)";
+
     kernel_log<<<1,1>>>(dev_x, dev_y);
 
     if(debug){
@@ -1175,7 +1362,7 @@ __global__ void kernel_max(const int32_t *x, int32_t *y, int32_t n){
    int32_t tid = threadIdx.x;
    int32_t maxValue = (int32_t)1 << 31;
    for (int i = tid; i < n; i += blockDim.x){
-       int32_t tmp = x[tid];
+       int32_t tmp = x[i];
        if(maxValue < tmp) maxValue = tmp;
    }
 
@@ -1309,3 +1496,58 @@ const char* cuda_cvm_left_shift(const int32_t *a, const int32_t b, const int32_t
     return check_cuda_error(cudaGetLastError());
 }
 
+__global__ void kernel_concatenate(const int32_t *input, const int64_t *ishape, int32_t *output, 
+        int64_t* oshape, const int32_t odim, const int32_t n,  
+        const int64_t preShapeSize, const int64_t curShapeSize, const int32_t axis){
+	int i = threadIdx.x + blockDim.x * blockIdx.x;
+	if(i < n){
+        int32_t o_i = i, in_i2 = 0, shapeSize = 0;
+        for(int j = odim-1; j >= 0; j--){
+            int64_t col = o_i % oshape[j];
+            o_i /= oshape[j];
+            int64_t tmpcol = col;
+            if(j == axis){
+                if(col >= preShapeSize && col < curShapeSize) {
+                    tmpcol = col - preShapeSize;
+                }else{
+                    return;
+                }
+            }
+            in_i2 += (j == odim-1 ? tmpcol : tmpcol * shapeSize);
+            shapeSize = (j == odim-1 ? ishape[j] : shapeSize * ishape[j]);
+        }
+        output[i] = input[in_i2];
+	}
+}
+const char* cuda_concatenate(const int32_t *input, const int64_t *ishape, const int32_t idim, const int32_t in, 
+        int32_t *output, int64_t* oshape, const int32_t odim, const int32_t on,  
+        const int64_t preShapeSize, const int64_t curShapeSize, const int32_t axis, bool debug){
+    const int32_t *dev_input = input;
+    int32_t *tmp_input, *dev_output = output;
+    if(debug){
+        cudaMalloc((void**)&tmp_input, sizeof(int32_t) * in);
+        cudaMalloc((void**)&dev_output, sizeof(int32_t) * on);
+        cudaMemcpy(tmp_input, input, sizeof(int32_t) * in, cudaMemcpyHostToDevice);
+        dev_input = tmp_input;
+    }
+
+    int64_t* dev_ishape, *dev_oshape;
+    cudaMalloc((void**)&dev_ishape, sizeof(int64_t) * idim);
+    cudaMalloc((void**)&dev_oshape, sizeof(int64_t) * odim);
+    cudaMemcpy(dev_ishape, ishape, sizeof(int64_t)*idim, cudaMemcpyHostToDevice);
+    cudaMemcpy(dev_oshape, oshape, sizeof(int64_t)*odim, cudaMemcpyHostToDevice);
+    int bSize = 256;
+    int gSize = (on + bSize - 1) / bSize;
+    kernel_concatenate<<<gSize, bSize>>>(dev_input, dev_ishape, dev_output, dev_oshape, odim, on,
+            preShapeSize, curShapeSize, axis);
+
+    cudaFree(dev_ishape);
+    cudaFree(dev_oshape);
+
+    if(debug){
+        cudaMemcpy(output, dev_output, sizeof(int32_t) * on, cudaMemcpyDeviceToHost);
+        cudaFree(tmp_input);
+        cudaFree(dev_output);
+    }
+    return check_cuda_error(cudaGetLastError());
+}

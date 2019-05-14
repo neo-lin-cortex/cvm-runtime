@@ -415,23 +415,32 @@ std::function<void()> CvmRuntime::CreateCVMOp(
 
   // Get compiled function from the module that contains both host and device
   // code.
-  auto op = param.func_name;
-  int device_type = static_cast<int>(ctxs_[0].device_type);
-  std::string module_name = "cvm.runtime.cvm";
-  if (device_type == kDLGPU) module_name += "_cuda";
-  module_name += ".";
-  auto func = cvm::runtime::Registry::Get(module_name + op);
-  VERIFY(func != nullptr) << "function undefined";
-  return [arg_ptr, op, func, device_type](){
-    CVMRetValue rv;
-    CVMArgs targs(
-      arg_ptr->arg_values.data(),
-      arg_ptr->arg_tcodes.data(),
-      static_cast<int>(arg_ptr->arg_values.size())
-    );
-    func->CallPacked(targs, &rv);
-  };
-  
+  auto ops = std::vector<std::string>{"dense", "conv2d", "flatten", "broadcast_add", "broadcast_sub", "broadcast_mul", "broadcast_div",
+      "broadcast_right_shift", "broadcast_left_shift", "clip", "relu", "max_pool2d", "sum", "elemwise_add", "reshape", "__div_scalar__", "log2",
+  "max", "broadcast_max", "abs", "cvm_clip", "cvm_right_shift", "cvm_left_shift", "concatenate", "repeat", "negative", "slice_like"};
+  for (auto& op : ops) {
+    if (param.func_name.size() >= op.size() && param.func_name.substr(0, op.size()) == op) {
+        int device_type = static_cast<int>(ctxs_[0].device_type);
+    return [arg_ptr, op, device_type](){
+      CVMRetValue rv;
+      CVMArgs targs(arg_ptr->arg_values.data(),
+          arg_ptr->arg_tcodes.data(),
+          static_cast<int>(arg_ptr->arg_values.size()));
+//          std::cout << "cvm.runtime.cvm_cuda." + op << std::endl;
+          std::string module_name = "cvm.runtime.cvm";
+          if(device_type == kDLGPU)
+            module_name += "_cuda";
+          module_name += ".";
+          auto func = cvm::runtime::Registry::Get(module_name + op);
+          assert(func != NULL);
+          func->CallPacked(targs, &rv);
+
+      };
+    }
+  }
+  std::cout << "param.func_name not found : " << param.func_name << std::endl;
+
+//  std::cout << param.func_name << " " << param.attrs << "\n";
   return [](){};
 }
 
@@ -524,7 +533,7 @@ CVM_REGISTER_GLOBAL("cvm.runtime.create")
     } catch (std::logic_error &err) {
       *rv = -1;
     } catch (std::runtime_error &err) {
-      *rv = -2;  
+      *rv = -2;
     }
   });
 
@@ -536,8 +545,8 @@ CVM_REGISTER_GLOBAL("cvm.runtime.estimate_ops")
                                     "graph_runtime.estimate_ops is "
                                     "at least 1, but it has "
                                   << args.num_args;
-    
-      *rv = CvmRuntime::EstimateOps(args[0]); 
+
+      *rv = CvmRuntime::EstimateOps(args[0]);
     } catch (std::logic_error &err) {
       *rv = -1;
     } catch (std::runtime_error &err) {

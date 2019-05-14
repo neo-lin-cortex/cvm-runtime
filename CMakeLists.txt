@@ -5,6 +5,7 @@ set( CMAKE_EXPORT_COMPILE_COMMANDS ON )
 # Utility functions
 include(cmake/util/Util.cmake)
 include(cmake/util/FindCUDA.cmake)
+include(cmake/util/FindOpenmp.cmake)
 
 if(EXISTS ${CMAKE_CURRENT_BINARY_DIR}/config.cmake)
   include(${CMAKE_CURRENT_BINARY_DIR}/config.cmake)
@@ -58,8 +59,8 @@ else(MSVC)
   if ("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
     add_compile_options(-O0 -Wall -fPIC -fvisibility=hidden -std=c++11)
   else()
-    set(CMAKE_C_FLAGS "-g -O2 -Wall -fPIC -fvisibility=hidden ${CMAKE_C_FLAGS}")
-    set(CMAKE_CXX_FLAGS "-g -O2 -Wall -fPIC -fvisibility=hidden -std=c++11 ${CMAKE_CXX_FLAGS}")
+    set(CMAKE_C_FLAGS "-O3 -mavx2 -Wall -fPIC -fvisibility=hidden ${CMAKE_C_FLAGS}")
+    set(CMAKE_CXX_FLAGS "-O3 -mavx2 -Wall -fPIC -fvisibility=hidden -std=c++11 ${CMAKE_CXX_FLAGS}")
   endif ()
   if (CMAKE_CXX_COMPILER_ID MATCHES "GNU" AND
       CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 7.0)
