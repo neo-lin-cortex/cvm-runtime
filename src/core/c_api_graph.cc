@@ -47,8 +47,12 @@ int CVMGraphSetJSONAttr(GraphHandle handle,
   API_BEGIN();
   Graph* g = static_cast<Graph*>(handle);
   std::string temp(json_value);
+#ifndef _LIBCPP_SGX_NO_IOSTREAMS
   std::istringstream is(temp);
   utils::JSONReader reader(&is);
+#else
+  utils::JSONReader reader(&temp);
+#endif
   cvm::any value;
   reader.Read(&value);
   g->attrs[std::string(key)] = std::make_shared<any>(std::move(value));
@@ -65,10 +69,17 @@ int CVMGraphGetJSONAttr(GraphHandle handle,
   std::string skey(key);
   auto it = g->attrs.find(skey);
   if (it != g->attrs.end()) {
+#ifndef _LIBCPP_SGX_NO_IOSTREAMS
     std::ostringstream os;
     utils::JSONWriter writer(&os);
     writer.Write(*it->second.get());
     ret->ret_str = os.str();
+#else
+    std::string str;
+    utils::JSONWriter writer(&str);
+    writer.Write(*it->second.get());
+    ret->ret_str = str;
+#endif
     *json_out = (ret->ret_str).c_str();
     *success = 1;
   } else {

@@ -26,6 +26,7 @@ CVMModel::CVMModel(const string& graph, DLContext _ctx):
 {
   ctx_ = _ctx;
   const PackedFunc* module_creator = Registry::Get("cvm.runtime.create");
+  
   module_ = (*module_creator)(graph,
                               static_cast<int>(ctx_.device_type),
                               static_cast<int>(ctx_.device_id));

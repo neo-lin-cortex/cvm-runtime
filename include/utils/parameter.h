@@ -325,6 +325,7 @@ class FieldAccessEntry {
    * \param value the value to be set
    */
   virtual void Set(void *head, const std::string &value) const = 0;
+  virtual void SetInt(void *head, const std::string &value) const = 0;
   // check if value is OK
   virtual void Check(void *head) const {}
   /*!
@@ -574,6 +575,32 @@ class FieldEntryBase : public FieldAccessEntry {
       throw utils::ParamError(os.str());
     }
   }
+  virtual void SetInt(void *head, const std::string &value) const {
+    std::istringstream is(value);
+    int ivalue = 0;
+    is >> ivalue;
+    //is >> this->Get(head);
+    this->GetInt(head) = ivalue;
+    //std::cout << value << " " << ivalue << " " << this->Get(head) << std::endl;
+    if (!is.fail()) {
+      while (!is.eof()) {
+        int ch = is.get();
+        if (ch == EOF) {
+          is.clear(); break;
+        }
+        if (!isspace(ch)) {
+          is.setstate(std::ios::failbit); break;
+        }
+      }
+    }
+
+    if (is.fail()) {
+      std::ostringstream os;
+      os << "Invalid Parameter format for " << key_
+         << " expect " << type_str() << " but value=\'" << value<< '\'';
+      throw utils::ParamError(os.str());
+    }
+  }
   virtual std::string GetStringValue(void *head) const {
     std::ostringstream os;
     PrintValue(os, this->Get(head));
@@ -651,6 +678,9 @@ class FieldEntryBase : public FieldAccessEntry {
   // then Get(&param) will return reference to param.learning_rate
   inline DType &Get(void *head) const {
     return *(DType*)((char*)(head) + offset_);  // NOLINT(*)
+  }
+  inline int &GetInt(void *head) const {
+    return *(int*)((char*)(head) + offset_);  // NOLINT(*)
   }
   // internal offset of the field
   ptrdiff_t offset_;
@@ -740,10 +770,12 @@ class FieldEntry<int>
         throw utils::ParamError(os.str());
       } else {
         os << it->second;
-        Parent::Set(head, os.str());
+        //Parent::Set(head, os.str());
+        Parent::SetInt(head, os.str());
       }
     } else {
-      Parent::Set(head, value);
+      //Parent::Set(head, value);
+      Parent::SetInt(head, value);
     }
   }
   virtual ParamFieldInfo GetFieldInfo() const {
@@ -846,10 +878,12 @@ class FieldEntry<optional<int> >
         throw utils::ParamError(os.str());
       } else {
         os << it->second;
-        Parent::Set(head, os.str());
+        //Parent::Set(head, os.str());
+        Parent::SetInt(head, os.str());
       }
     } else {
-      Parent::Set(head, value);
+      //Parent::Set(head, value);
+      Parent::SetInt(head, value);
     }
   }
   virtual ParamFieldInfo GetFieldInfo() const {

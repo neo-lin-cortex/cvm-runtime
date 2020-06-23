@@ -910,6 +910,7 @@ inline std::string CVMType2String(CVMType t) {
   if (t.bits == 1 && t.lanes == 1 && t.code == kDLUInt) {
     return "bool";
   }
+  std::string repr = "";
   repr += TypeCode2Str(t.code);
   if (t.code == kHandle) return repr;
   repr += std::to_string(static_cast<int>(t.bits));

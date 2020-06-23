@@ -273,14 +273,15 @@ std::shared_ptr<Symbol> JSONGraph2Symbol(const JSONGraph &jgraph, bool no_parse)
 Graph LoadJSON(Graph src) {
   CHECK_NE(src.attrs.count("json"), 0U)
       << "Load JSON require json to be presented.";
-  const std::string &json_str =
+  std::string &json_str =
       cvm::get<std::string>(*src.attrs.at("json"));
   bool no_parse = false;
   if (src.attrs.count("load_json_no_parse")) {
     no_parse = cvm::get<bool>(*src.attrs.at("load_json_no_parse"));
   }
   std::istringstream is(json_str);
-  utils::JSONReader reader(&is);
+  //utils::JSONReader reader(&is);
+  utils::JSONReader reader(&json_str);
   JSONGraph jgraph;
   // load in json graph.
   jgraph.Load(&reader);
@@ -300,7 +301,9 @@ Graph SaveJSON(Graph src) {
   Symbol2JSONGraph(src_symbol, &jgraph);
   jgraph.attrs = src.attrs;
   std::ostringstream os;
-  utils::JSONWriter writer(&os);
+  //utils::JSONWriter writer(&os);
+  std::string str;
+  utils::JSONWriter writer(&str);
   jgraph.Save(&writer);
   Graph ret;
   ret.attrs["json"] = std::make_shared<any>(os.str());

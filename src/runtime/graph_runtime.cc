@@ -103,8 +103,12 @@ void CvmRuntime::SetContext(const std::vector<CVMContext>& ctxs) {
 }
 
 void CvmRuntime::Init() {
+#ifndef _LIBCPP_SGX_NO_IOSTREAMS
   std::istringstream is(graph_json_);
   utils::JSONReader reader(&is);
+#else
+  utils::JSONReader reader(&graph_json_);
+#endif
   this->Load(&reader);
   this->PrepareGraphWithVersion();
   this->CheckAttr();
@@ -179,19 +183,23 @@ void CvmRuntime::PrepareGraphWithVersion() {
   VERIFY_EQ(num_node_entries_, attrs_.shape.size())
     << "graph attribute shape size: " << attrs_.shape.size()
     << ", Expected " << num_node_entries_;
+  int ti = 0;
   for (auto shape: attrs_.shape) {
     uint64_t sx = 1;
     VERIFY((0 < shape.size()) && (shape.size() <= 6))
       << "shape ndim should between (0, 6], but " << shape.size();
+    int tj = 0;
     for (auto x : shape) {
       sx *= x;
       VERIFY((0 < x) && (x <= (1<<24)))
         << "single dimension should between (0, " << (1<<24)
-        << "], but " << x;
+        << "], but " << x << " " << ti << " " << tj;
       VERIFY_LE(sx, (1<<30))
         << "shape size shoule not greater than" << (1<<30)
         << ", but " << sx;
+      tj++;
     }
+    ti++;
   }
 
   // Verify precision

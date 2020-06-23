@@ -12,13 +12,16 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/config.cmake)
   include(${CMAKE_CURRENT_SOURCE_DIR}/config.cmake)
 endif()
 
-if(ENABLE_RISCV)
+if(USE_RISCV)
+    message(STATUS "ENABLE RISCV")
     set(CMAKE_SYSTEM_NAME Generic)
     set(CMAKE_SYSTEM_PROCESSOR riscv)
     set(CMAKE_CROSSCOMPILING 1)
     set(CMAKE_CXX_COMPILER "riscv64-unknown-linux-gnu-g++")
     set(CMAKE_C_COMPILER "riscv64-unknown-linux-gnu-gcc")
     set(CMAKE_ASM_COMPILER "riscv64-unknown-linux-gnu-gcc")
+    set(CMAKE_LINKER "riscv64-unknown-linux-gnu-ld")
+    set(CMAKE_AR "riscv64-unknown-linux-gnu-ar")
     set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
     set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
     set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
@@ -32,8 +35,8 @@ include_directories("include")
 
 
 # Generic compilation options
-set(CMAKE_C_FLAGS "-fsigned-char -Wall -fPIC ${CMAKE_C_FLAGS}")
-set(CMAKE_CXX_FLAGS "-fsigned-char -Wall -fPIC -std=c++11 ${CMAKE_CXX_FLAGS}")
+set(CMAKE_C_FLAGS "-static -fsigned-char -Wall -fPIC -D_LIBCPP_SGX_NO_IOSTREAMS ${CMAKE_C_FLAGS}")
+set(CMAKE_CXX_FLAGS "-static -fsigned-char -Wall -fPIC -std=c++11 -D_LIBCPP_SGX_NO_IOSTREAMS ${CMAKE_CXX_FLAGS}")
 
 if (DEBUG)
   set(CMAKE_C_FLAGS "-Og -g ${CMAKE_C_FLAGS}")
@@ -62,16 +65,6 @@ file(GLOB RUNTIME_SRCS src/core/*.cc
 
 file(GLOB CVM_SRCS src/compiler/*.cc
                    src/pass/*.cc)
-
-if(ENABLE_RISCV)
-    message(STATUS "ENABLE RISCV")
-
-    file(GLOB RUNTIME_RISCV_SRCS src/runtime/formal/devapi/*.cc)
-    list(APPEND RUNTIME_SRCS ${RUNTIME_RISCV_SRCS})
-
-    file(GLOB CVM_OPS_RISCV_SRCS src/runtime/formal/ops/*.cc)
-    list(APPEND RUNTIME_SRCS ${CVM_OPS_RISCV_SRCS})
-endif()
 
 if(ENABLE_CPU)
     message(STATUS "ENABLE CPU")

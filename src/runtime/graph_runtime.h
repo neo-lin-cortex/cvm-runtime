@@ -301,7 +301,8 @@ class CvmRuntime : public ModuleNode {
       attrs.op = cvm::Op::Get(param.func_name);
 
       std::istringstream is(json_);
-      utils::JSONReader reader(&is);
+      //utils::JSONReader reader(&is);
+      utils::JSONReader reader(&json_);
       reader.Read(&attrs.dict);
       if (attrs.op->attr_parser) {
         attrs.op->attr_parser(&attrs);
