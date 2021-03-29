@@ -22,7 +22,8 @@ class PTQ_SECTION:
     PREPARE = 'PREPARE'
 
 # TODO: move some of the helper funcs into other files.
-class convert_helper_funcs:
+class ConvertHelperFuncs:
+    @staticmethod
     def _seed_all(seed=1013):
         """Set ALL the seed of random env.
         TODO: fill the comment.
@@ -32,6 +33,7 @@ class convert_helper_funcs:
         np.random.seed(seed)
         mx.random.seed(seed)
 
+    @staticmethod
     def _load_fname(prefix, suffix=None, with_ext=False):
         """Get the model files at a given stage.
 
@@ -52,7 +54,8 @@ class convert_helper_funcs:
         suffix = "."+suffix if suffix is not None else ""
         return utils.extend_fname(prefix+suffix, with_ext)
 
-    def _get_ctx(device, id_list, dctx=mx.cpu()):
+    @staticmethod
+    def _get_ctx(device_type, d_num, dctx=mx.cpu()):
         """Get the context specified in configuration file.
             WARNING: Because it's not recommanded to set the GPU ID in the application, \'Device_ids\' is abandoned.
                      Please use Env Variable CUDA_VISIBLE_DEVICES to assign the GPUs to MRT..
@@ -63,27 +66,22 @@ class convert_helper_funcs:
             The context specified in the option.
         """
         contex = dctx
-        device_type = args.device
-        
         if device_type == 'GPU':
-            contex = mx.gpu(device_ids[0]) if len(device_ids) == 1 \
-                  else [mx.gpu(i) for i in num]
+            contex = mx.gpu(0) if d_num == 1 \
+                  else [mx.gpu(i) for i in range(d_num)]
         else:
-            device_ids = _get_val(config, section, 'Device_ids', dval='')
-            # _check(device_ids == '', section, 'Device_ids',
-                   # message='`Device_ids` should be null given `cpu` device type')
+            contex = mx.cpu()
+            # TODO: check if mx supports the specific cpu (Core Binding).
         return contex
 
 def post_training_quant(args, logger):
     logger.info('Start PTQ.')
     model_name = args.model_name
     model_prefix = path.join(args.model_path, model_name)
-    model_ctx = args.ctx
-
+    model_ctx = ConvertHelperFuncs._get_ctx(args.device_type, args.device_num)
+    input_shape = args.input_shape
     sec = PTQ_SECTION.PREPARE
-    logger.debug(f'Start {sec}.')
-
-
+    logger.debug(f'Start {sec}. model_name: {model_name}, model_prefix: {model_prefix}, model_ctx: {model_ctx}, input_shape: {input_shape}')
 
 
 if __name__ == "__main__":
@@ -100,14 +98,15 @@ if __name__ == "__main__":
     parser.add_argument('--seed', default=1005, type=int, help='Random seed for stable results reproduction.')
     parser.add_argument('--model_name', '-n', required=True, type=str, help='The name of the target model.')
     parser.add_argument('--model_path', '-p', default=conf.MRT_MODEL_ROOT, type=str, help='The path to the target model.')
-    
+    parser.add_argument('--input_shape', '-s', required=True, nargs='+', type=int, help="The shape of tuple.")
     parser.add_argument('--batch_size', default=64, type=int, help='The size of mini-batch for data loader. It has an effect on the quantized model\'s acc when utilized batch-related method.')
     parser.add_argument('--workers', default=4, type=int, help='The number of workers(processes) for data loader.')
     parser.add_argument('--dataset_name', '-d', required=True, type=str, help='The path to dataset.')
     parser.add_argument('--dataset_path', default=conf.MRT_DATASET_ROOT, type=str, help='The path to dataset.')
-
+    parser.add_argument('--device_type', '-D', default=DEVICE.CPU, choices=[DEVICE.GPU, DEVICE.CPU], type=str, help='Assign the device MXNet running on.')
+    parser.add_argument('--device_num', '-N', default=1, type=int, help='# of GPU devices.')
     # Quantization parameters
-    parser.add_argument('--quant_type', '-q', required=True, default=QUANT_TYPE.PTQ, choices=[QUANT_TYPE.PTQ, QUANT_TYPE.QAT], type=str, help='PTQ or QAT.')
+    parser.add_argument('--quant_type', '-q', default=QUANT_TYPE.PTQ, choices=[QUANT_TYPE.PTQ, QUANT_TYPE.QAT], type=str, help='PTQ or QAT.')
     parser.add_argument('--n_bits_w', default=32, type=int, help='Bitwidth for weight quantization.')
     parser.add_argument('--channel_wise', action='store_true', help='Apply channel_wise quantization for weights')
     parser.add_argument('--n_bits_a', default=32, type=int, help='Bitwidth for activation quantization')
@@ -139,7 +138,7 @@ if __name__ == "__main__":
     logger = logging.getLogger("log.main")
 
     # Init Rand Seed
-    _seed_all(args.seed)
+    ConvertHelperFuncs._seed_all(args.seed)
 
     if args.quant_type == QUANT_TYPE.PTQ:
         post_training_quant(args, logger)
