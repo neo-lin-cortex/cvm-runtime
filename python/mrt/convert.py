@@ -9,17 +9,22 @@ import mxnet as mx
 
 from mrt import utils, conf
 from mrt.gluon_zoo import save_model
+from mrt.transformer import Model
 
 class QUANT_TYPE:
     PTQ = 'PTQ'
     QAT = 'QAT'
 
+
 class DEVICE:
     CPU = 'CPU'
     GPU = 'GPU'
 
+
 class PTQ_SECTION:
     PREPARE = 'PREPARE'
+    SPLIT_MODEL = 'SPLIT_MODEL'
+
 
 # TODO: move some of the helper funcs into other files.
 class ConvertHelperFuncs:
@@ -55,6 +60,24 @@ class ConvertHelperFuncs:
         return utils.extend_fname(prefix+suffix, with_ext)
 
     @staticmethod
+    def _check(expression, section, option, message='Not a valid value'):
+        """check whether an operation of main2 if valid and report error message if invalid.
+
+        Parameters
+        ----------
+        expression : bool
+            The judgement conditions in main2.
+        section : string
+            The section of configuration file.
+        option : string
+            The option of the section.
+        message : string
+            The error message to be reported.
+        """
+        assert expression, message + '.\noption `%s` in section `%s`' \
+            % (option, section)
+
+    @staticmethod
     def _get_ctx(device_type, d_num, dctx=mx.cpu()):
         """Get the context specified in configuration file.
             WARNING: Because it's not recommanded to set the GPU ID in the application, \'Device_ids\' is abandoned.
@@ -73,38 +96,109 @@ class ConvertHelperFuncs:
             contex = mx.cpu()
             # TODO: check if mx supports the specific cpu (Core Binding).
         return contex
+    
+    @staticmethod
+    def set_batch(input_shape, batch):
+        """Get the input shape with respect to a specified batch value and an original input shape.
+
+        Parameters
+        ----------
+        input_shape : tuple
+            The input shape with batch axis unset.
+        batch : int
+            The batch value.
+
+        Returns
+        -------
+        ishape : tuple
+            The input shape with the value of batch axis equal to batch.
+        """
+        return [batch if s == -1 else s for s in input_shape]
+
+
+def post_training_quant_prepare(start_here:bool, dump: bool,
+    model_name:str, model_prefix:str, model_ctx:mx.Context, input_shape:tuple, batch_size: int):
+    """The prepare section of PTQ. In this section, a model with specific name and dir is loaded and it has been reshaped with input_shape and batch_size.
+        The reshape function transforms input_shape's element that is equivalent to -1 into batch_size. 
+        TODO: fill the comments.
+        Returns
+        -------
+        kwreses : dict
+            A dict includes the prepared model (transformer.Model) with key 'model'.
+        """
+
+    logger.debug(f'Start {PTQ_SECTION.PREPARE}. model_name: {model_name}, model_prefix: {model_prefix}, '
+                 f'model_ctx: {model_ctx}, input_shape: {input_shape}, batch_size:{batch_size}')
+    if -1 not in input_shape:
+        logger.warn(f'The input_shape does not includes -1, the batch_size: {batch_size} will not be used.')
+    sym_file, prm_file = ConvertHelperFuncs._load_fname(model_prefix, suffix=PTQ_SECTION.PREPARE.lower())
+    sym_path, prm_path = ConvertHelperFuncs._load_fname(model_prefix)
+    if not path.exists(sym_path) or not path.exists(prm_path):
+        logger.debug("Not path.exists(sym_path) or not path.exists(prm_path).")
+        save_model(model_name, data_dir=args.model_dir_path)
+    if not start_here:
+        model = Model.load(sym_path, prm_path)
+        model.prepare(ConvertHelperFuncs.set_batch(input_shape, batch_size))
+        if dump:
+            model.save(sym_file, prm_file)
+        logger.info("Prepare stage finished.")
+    else:
+        ConvertHelperFuncs._check(path.exists(sym_file) and path.exists(prm_file), 'DEFAULT',
+               'Start', message=f"Check point of {PTQ_SECTION.PREPARE} is not found in {prm_file}, " \
+               f"please move the start point earlier.")
+        model = Model.load(sym_file, prm_file)
+        logger.info("{PTQ_SECTION.PREPARE} stage checked")
+    return {
+        'model': model,
+    }
 
 def post_training_quant(args, logger):
+    """The progress of quant of a CV model.
+    TODO: fill the comments; design a more general Quanter class for different models.
+    """
     logger.info('Start PTQ.')
     model_name = args.model_name
-    model_prefix = path.join(args.model_path, model_name)
+    model_dir_path = args.model_dir_path
+    model_prefix = path.join(model_dir_path, model_name)
     model_ctx = ConvertHelperFuncs._get_ctx(args.device_type, args.device_num)
     input_shape = args.input_shape
+    batch_size = args.batch_size
+    dump = args.dump
+    
     sec = PTQ_SECTION.PREPARE
-    logger.debug(f'Start {sec}. model_name: {model_name}, model_prefix: {model_prefix}, model_ctx: {model_ctx}, input_shape: {input_shape}')
+    pre_kwargs = {'model_name':model_name, 'model_prefix': model_prefix, 'model_ctx':model_ctx, 'input_shape':input_shape, 'batch_size': batch_size}
+    kwreses = post_training_quant_prepare(start_here=False, dump=dump, **pre_kwargs)
+    assert 'model' in kwreses
+    model = kwreses['model']
+    print(model.params)
+    sec = PTQ_SECTION.SPLIT_MODEL
+    #PASS
+
+    sec = 'QUANTIZATION'
 
 
 if __name__ == "__main__":
     # Define Args
-    parser = argparse.ArgumentParser(description='''Welcome to MRT (Model Representing Tool). ''' 
+    parser = argparse.ArgumentParser(description='''Welcome to MRT (Model Representing Tool). '''
     '''It's designed to support both PTQ(Post-Training Quantization) and QAT(Quant-Aware Training). '''
     '''MRT holds a packet of almost all the sart methods for PTQ, and it's being updated. '''
     '''For QAT, MRT provides only kinds of typical implementation for some common demands. '''
-    '''It's highly recommended to follow the DOC (TODO: add link to doc) and implement specifically the
-    numerous methods to bring up your model, since it's a tricky thing all the time.''',
+    '''It's highly recommended to follow the DOC (TODO: add link to doc) and implement specifically the'''
+    '''numerous methods to bring up your model, since it's a tricky thing all the time.''',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--verbosity', default=logging.NOTSET, choices=[logging.NOTSET, logging.DEBUG, logging.INFO, logging.WARN, logging.ERROR], type=int, help='Indicate the level of logging.')
     # General parameters for data and model
     parser.add_argument('--seed', default=1005, type=int, help='Random seed for stable results reproduction.')
     parser.add_argument('--model_name', '-n', required=True, type=str, help='The name of the target model.')
-    parser.add_argument('--model_path', '-p', default=conf.MRT_MODEL_ROOT, type=str, help='The path to the target model.')
-    parser.add_argument('--input_shape', '-s', required=True, nargs='+', type=int, help="The shape of tuple.")
+    parser.add_argument('--model_dir_path', '-p', default=conf.MRT_MODEL_ROOT, type=str, help='The path to the target model\'s dir.')
+    parser.add_argument('--input_shape', '-s', required=True, nargs='+', type=int, help="The shape of tuple. The batch dim should be set to -1.")
     parser.add_argument('--batch_size', default=64, type=int, help='The size of mini-batch for data loader. It has an effect on the quantized model\'s acc when utilized batch-related method.')
     parser.add_argument('--workers', default=4, type=int, help='The number of workers(processes) for data loader.')
     parser.add_argument('--dataset_name', '-d', required=True, type=str, help='The path to dataset.')
     parser.add_argument('--dataset_path', default=conf.MRT_DATASET_ROOT, type=str, help='The path to dataset.')
     parser.add_argument('--device_type', '-D', default=DEVICE.CPU, choices=[DEVICE.GPU, DEVICE.CPU], type=str, help='Assign the device MXNet running on.')
     parser.add_argument('--device_num', '-N', default=1, type=int, help='# of GPU devices.')
+    parser.add_argument('--dump', action='store_true', default=True, help='Dump intermediate data.')
     # Quantization parameters
     parser.add_argument('--quant_type', '-q', default=QUANT_TYPE.PTQ, choices=[QUANT_TYPE.PTQ, QUANT_TYPE.QAT], type=str, help='PTQ or QAT.')
     parser.add_argument('--n_bits_w', default=32, type=int, help='Bitwidth for weight quantization.')
